@@ -1,0 +1,228 @@
+import numpy as np
+import casadi as ca
+from robot_model import RobotConfig, DifferentialDriveModel
+
+
+class TrajectoryOptimizer:
+    def __init__(self, config: RobotConfig):
+        self.config = config
+        self.model = DifferentialDriveModel(config)
+
+    def solve(self, waypoints, num_samples_per_segment=10, accuracy_weight=0.0):
+        """
+        waypoints: list of (x, y, heading)
+        heading is in radians. None means unconstrained.
+        accuracy_weight: weight for smoothness/jerk penalty (0 = pure time-optimal).
+        """
+        num_segments = len(waypoints) - 1
+        N = num_segments * num_samples_per_segment + 1
+
+        opti = ca.Opti()
+
+        # Decision variables
+        dt = opti.variable()
+        X = opti.variable(N, 5)  # x, y, theta, vl, vr
+
+        # Unpack columns for readability
+        x = X[:, 0]
+        y = X[:, 1]
+        theta = X[:, 2]
+        vl = X[:, 3]
+        vr = X[:, 4]
+
+        # Objective: minimize total time + smoothness penalty
+        time_cost = dt * (N - 1)
+        smoothness_cost = 0
+        if accuracy_weight > 0 and N > 2:
+            for k in range(N - 2):
+                al_k = (vl[k + 1] - vl[k]) / dt
+                al_k1 = (vl[k + 2] - vl[k + 1]) / dt
+                ar_k = (vr[k + 1] - vr[k]) / dt
+                ar_k1 = (vr[k + 2] - vr[k + 1]) / dt
+                smoothness_cost += (al_k1 - al_k)**2 + (ar_k1 - ar_k)**2
+        opti.minimize(time_cost + accuracy_weight * smoothness_cost)
+
+        # Bounds on dt
+        opti.subject_to(dt >= 0.001)
+        opti.subject_to(dt <= 1.0)
+
+        # Bounds on states
+        opti.subject_to(x >= -20)
+        opti.subject_to(x <= 20)
+        opti.subject_to(y >= -20)
+        opti.subject_to(y <= 20)
+        opti.subject_to(theta >= -100)
+        opti.subject_to(theta <= 100)
+
+        # Wheel-speed bounds derived from motor no-load speed
+        v_max = self.config.max_linear_speed
+        # Use 99 % of no-load speed to avoid the exact zero-force singularity
+        v_bound = 0.99 * v_max
+        opti.subject_to(vl >= -v_bound)
+        opti.subject_to(vl <= v_bound)
+        opti.subject_to(vr >= -v_bound)
+        opti.subject_to(vr <= v_bound)
+
+        # Trapezoidal collocation & physical constraints
+        for k in range(N - 1):
+            v1 = (vl[k] + vr[k]) / 2.0
+            v2 = (vl[k + 1] + vr[k + 1]) / 2.0
+            omega1 = (vr[k] - vl[k]) / self.config.track_width
+            omega2 = (vr[k + 1] - vl[k + 1]) / self.config.track_width
+
+            # Kinematic integration
+            opti.subject_to(
+                x[k + 1]
+                == x[k]
+                + 0.5 * (v1 * ca.cos(theta[k]) + v2 * ca.cos(theta[k + 1])) * dt
+            )
+            opti.subject_to(
+                y[k + 1]
+                == y[k]
+                + 0.5 * (v1 * ca.sin(theta[k]) + v2 * ca.sin(theta[k + 1])) * dt
+            )
+            opti.subject_to(
+                theta[k + 1] == theta[k] + 0.5 * (omega1 + omega2) * dt
+            )
+
+            # Accelerations across interval [k, k + 1]
+            al = (vl[k + 1] - vl[k]) / dt
+            ar = (vr[k + 1] - vr[k]) / dt
+
+            # Force calculations (evaluated at start of interval to match legacy behaviour)
+            fl, fr = self._dynamics_symbolic(vl[k], vr[k], al, ar)
+            max_fl = self._max_force_symbolic(vl[k])
+            max_fr = self._max_force_symbolic(vr[k])
+
+            # Motor limits
+            opti.subject_to(ca.fabs(fl) <= max_fl)
+            opti.subject_to(ca.fabs(fr) <= max_fr)
+
+            # Traction limit
+            f_total = ca.fabs(fl) + ca.fabs(fr)
+            f_traction_max = self.config.cof * self.config.mass * self.config.g
+            opti.subject_to(f_total <= f_traction_max)
+
+        # Waypoint constraints
+        for i, wp in enumerate(waypoints):
+            idx = i * num_samples_per_segment
+            opti.subject_to(x[idx] == wp[0])
+            opti.subject_to(y[idx] == wp[1])
+            if wp[2] is not None:
+                opti.subject_to(theta[idx] == wp[2])
+
+        # Start and end at rest
+        opti.subject_to(vl[0] == 0)
+        opti.subject_to(vr[0] == 0)
+        opti.subject_to(vl[N - 1] == 0)
+        opti.subject_to(vr[N - 1] == 0)
+
+        # Initial guess (linear interpolation between waypoints, zero wheelspeed)
+        guess = self._build_initial_guess(waypoints, num_samples_per_segment, N)
+        opti.set_initial(dt, float(guess[0]))
+        guess_states = guess[1:].reshape((N, 5))
+        opti.set_initial(X, guess_states)
+
+        # Solver setup
+        p_opts = {"expand": True}
+        s_opts = {
+            "max_iter": 5000,
+            "print_level": 0,
+            "tol": 1e-2,
+            "constr_viol_tol": 1e-2,
+            "acceptable_tol": 1e-1,
+            "acceptable_constr_viol_tol": 1e-1,
+            "acceptable_iter": 5,
+            "nlp_scaling_method": "gradient-based",
+            "hessian_approximation": "limited-memory",
+        }
+        opti.solver("ipopt", p_opts, s_opts)
+
+        try:
+            sol = opti.solve()
+            dt_val = float(sol.value(dt))
+            X_val = np.array(sol.value(X))
+            params = np.concatenate([[dt_val], X_val.flatten()])
+            print("Optimization converged. Total time: {:.4f}s".format(dt_val * (N - 1)))
+            return self.format_output(params, N)
+        except Exception as e:
+            print("Optimization failed or timed out:", e)
+            # Return best-effort from debug values
+            dt_val = float(opti.debug.value(dt))
+            X_val = np.array(opti.debug.value(X))
+            params = np.concatenate([[dt_val], X_val.flatten()])
+            return self.format_output(params, N)
+
+    def _dynamics_symbolic(self, vl, vr, al, ar):
+        """CasADi version of DifferentialDriveModel.get_dynamics."""
+        a = (al + ar) / 2.0
+        alpha = (ar - al) / self.config.track_width
+        f_total = self.config.mass * a
+        m_total = self.config.inertia * alpha
+        fr = (f_total + (2.0 * m_total / self.config.track_width)) / 2.0
+        fl = f_total - fr
+        return fl, fr
+
+    def _max_force_symbolic(self, v_wheel):
+        """CasADi version of RobotConfig.get_max_force_at_velocity."""
+        omega = (v_wheel / self.config.wheel_radius) * self.config.gearing
+        torque = self.config.t_max_nm * (1.0 - ca.fabs(omega) / self.config.v_max_rad_s)
+        # NOTE: clamping at zero means no braking force above no-load speed.
+        # This matches the legacy scipy implementation.
+        torque = ca.fmax(0, torque)
+        force = (torque / self.config.wheel_radius) * self.config.gearing
+        return force
+
+    def _build_initial_guess(self, waypoints, num_samples_per_segment, N):
+        num_segments = len(waypoints) - 1
+        initial_dt = 0.1
+        guess = [initial_dt]
+        for i in range(num_segments):
+            p1 = waypoints[i]
+            p2 = waypoints[i + 1]
+            count = (
+                num_samples_per_segment
+                if i < num_segments - 1
+                else num_samples_per_segment + 1
+            )
+            for j in range(count):
+                frac = j / num_samples_per_segment
+                x = p1[0] + (p2[0] - p1[0]) * frac
+                y = p1[1] + (p2[1] - p1[1]) * frac
+                theta = p1[2] if p1[2] is not None else 0.0
+                if p1[2] is not None and p2[2] is not None:
+                    diff = (p2[2] - p1[2] + np.pi) % (2 * np.pi) - np.pi
+                    theta = p1[2] + diff * frac
+                guess.extend([x, y, theta, 0.0, 0.0])
+        return np.array(guess)
+
+    def format_output(self, params, N):
+        dt = params[0]
+        states = params[1:].reshape((N, 5))
+        samples = []
+        for k in range(N):
+            s = states[k]
+            vl, vr = s[3], s[4]
+            if k < N - 1:
+                vl_next, vr_next = states[k + 1][3], states[k + 1][4]
+                al, ar = (vl_next - vl) / dt, (vr_next - vr) / dt
+            else:
+                al, ar = 0.0, 0.0
+
+            fl, fr = self.model.get_dynamics(vl, vr, al, ar)
+            samples.append(
+                {
+                    "t": float(k * dt),
+                    "x": float(s[0]),
+                    "y": float(s[1]),
+                    "heading": float(s[2]),
+                    "vl": float(vl),
+                    "vr": float(vr),
+                    "omega": float((vr - vl) / self.config.track_width),
+                    "al": float(al),
+                    "ar": float(ar),
+                    "fl": float(fl),
+                    "fr": float(fr),
+                }
+            )
+        return samples
