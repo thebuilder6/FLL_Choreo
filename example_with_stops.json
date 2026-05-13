@@ -1,0 +1,7 @@
+[
+  {"x": 0.0, "y": 0.0, "heading": 0.0, "stop": true},
+  {"x": 0.5, "y": 0.0, "heading": 0.0, "stop": false},
+  {"x": 0.5, "y": 0.3, "heading": 1.57, "stop": true},
+  {"x": 1.0, "y": 0.3, "heading": 1.57, "stop": false},
+  {"x": 1.0, "y": 0.0, "heading": 0.0, "stop": true}
+]

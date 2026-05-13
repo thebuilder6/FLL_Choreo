@@ -11,11 +11,12 @@
 | ---------------- | ------- | ------------------------------------------------------------------- |
 | `robot_model.py` | OK      | Parses Choreo config; motor curve physics are fine                  |
 | `optimizer.py`   | ✅ DONE | CasADi + IPOPT; sub-second solves, physically feasible trajectories |
-| `main.py`        | ✅ DONE | `--accuracy-weight` flag wired to optimizer                         |
+| `main.py`        | ✅ DONE | `--accuracy-weight`, `--events`, `--stop-waypoints` flags           |
 | `plotter.py`     | OK      | Diagnostic plots work                                               |
 | Output `.traj`   | ✅ DONE | Validated + controller export (`--validate`, `--export-format`)     |
+| Event markers    | ✅ DONE | Mission actions at waypoints (lower_arm, release, etc.)             |
 
-Phase 1 (solver), Phase 2 (accuracy), and Phase 3 (validation/export) are all complete.
+Phase 1 (solver), Phase 2 (accuracy), Phase 3 (validation/export), and event markers are all complete.
 
 ---
 
@@ -75,6 +76,22 @@ Added validation and controller-ready export.
   - Exported **339 controller samples** at 20 ms dt.
 - **Deliverable**: `main.py --validate --export-format controller --controller-dt 0.02` generates a verified, robot-ready profile.
 
+### Event Markers ✅ DONE
+
+**Priority: High** | **Effort: Low**
+
+Added mission event markers for FLL robot actions.
+
+- **Delivered**:
+  - `optimizer.py`: `solve()` accepts `waypoint_events` dict, embeds events in output samples at waypoint indices.
+  - `main.py`: `--events` CLI flag (e.g., `"2:lower_arm,5:release"`), waypoint JSON supports optional `"event"` field.
+  - `export.py`: preserves events in controller export (resamples to fixed-dt, matches events to nearest timestep).
+- **Test results**:
+  - Waypoint JSON events: correctly embedded in .traj and controller export.
+  - CLI override: `--events` flag overrides JSON-specified events.
+  - Controller export: events preserved at nearest timestep (within dt), no duplicates.
+- **Deliverable**: `main.py --events "2:lower_arm,5:release"` triggers robot actions at specified waypoints.
+
 ### Phase 4 — Field Geometry (Optional)
 
 **Priority: Low** | **Effort: High**
@@ -100,15 +117,16 @@ Add FLL field obstacle / keep-out constraints.
 
 ## Immediate Next Action
 
-**Phase 4 (field obstacles)** is optional. The core pipeline is complete and ready for FLL use.
+**Phase 4 (field obstacles)** is optional. The core pipeline is complete with event markers and is ready for FLL use.
 
 ---
 
 ## Output Roadmap
 
-| Phase | File Changes                                                                 | New Files                   |
-| ----- | ---------------------------------------------------------------------------- | --------------------------- |
-| 1     | `optimizer.py` (rewrite)                                                     | —                           |
-| 2     | `optimizer.py` (add weighted objective), `main.py` (add `--accuracy-weight`) | —                           |
-| 3     | `main.py` (add `--export-format`)                                            | `export.py`, `validator.py` |
-| 4     | `optimizer.py` (add obstacle constraints)                                    | `field_geometry.py`         |
+| Phase | File Changes                                                                                  | New Files                   |
+| ----- | --------------------------------------------------------------------------------------------- | --------------------------- |
+| 1     | `optimizer.py` (rewrite)                                                                      | —                           |
+| 2     | `optimizer.py` (add weighted objective), `main.py` (add `--accuracy-weight`)                  | —                           |
+| 3     | `main.py` (add `--export-format`)                                                             | `export.py`, `validator.py` |
+| Event | `optimizer.py` (add event support), `main.py` (add `--events`), `export.py` (preserve events) | —                           |
+| 4     | `optimizer.py` (add obstacle constraints)                                                     | `field_geometry.py`         |

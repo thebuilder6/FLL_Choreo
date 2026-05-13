@@ -1,88 +1,162 @@
 import numpy as np
 
-class RobotConfig:
-    def __init__(self, config_dict):
-        # Extract from Choreo-like config
-        cfg = config_dict.get("config", {})
-        self.mass = cfg.get("mass", {}).get("val", 0.8)
-        self.inertia = cfg.get("inertia", {}).get("val", 0.001)
-        self.track_width = cfg.get("differentialTrackWidth", {}).get("val", 0.0965)
-        self.wheel_radius = cfg.get("radius", {}).get("val", 0.028) # Default if missing
-        
-        # Motor specs
-        self.v_max_rad_s = cfg.get("vmax", {}).get("val", 15.7) # RPM to rad/s
-        self.t_max_nm = cfg.get("tmax", {}).get("val", 0.04)
-        self.gearing = cfg.get("gearing", {}).get("val", 1.0)
-        
-        # Friction
-        self.cof = cfg.get("cof", {}).get("val", 1.5)
-        self.g = 9.81
 
-    def get_max_force_at_velocity(self, v_wheel):
+class RobotConfig:
+    """
+    Robot configuration parsed from Choreo-like JSON config file.
+
+    Default values are typical for a small FLL robot with LEGO motors.
+    """
+
+    # Default values for typical FLL robot
+    DEFAULT_MASS = 0.723  # kg
+    DEFAULT_INERTIA = 0.0024  # kg·m²
+    DEFAULT_TRACK_WIDTH = 0.0965  # m (96.5 mm)
+    DEFAULT_WHEEL_RADIUS = 0.028  # m (28 mm)
+    DEFAULT_VMAX = 15.7  # rad/s (150 RPM)
+    DEFAULT_TMAX = 0.04  # N·m
+    DEFAULT_GEARING = 1.0
+    DEFAULT_COF = 0.45  # coefficient of friction
+    GRAVITY = 9.81  # m/s²
+    DEFAULT_TORQUE_HEADROOM = 0.85  # 15% headroom for torque corrections
+    DEFAULT_SPEED_HEADROOM = 0.90  # 10% headroom for speed corrections
+
+    def __init__(self, config_dict):
+        """
+        Initialize robot configuration from config dictionary.
+
+        Args:
+            config_dict: Dictionary containing robot configuration in Choreo format
+        """
+        cfg = config_dict.get("config", {})
+
+        # Physical dimensions
+        self.mass = cfg.get("mass", {}).get("val", self.DEFAULT_MASS)
+        self.inertia = cfg.get("inertia", {}).get("val", self.DEFAULT_INERTIA)
+        self.track_width = cfg.get("differentialTrackWidth", {}).get("val", self.DEFAULT_TRACK_WIDTH)
+        self.wheel_radius = cfg.get("radius", {}).get("val", self.DEFAULT_WHEEL_RADIUS)
+
+        # Motor specifications
+        self.v_max_rad_s = cfg.get("vmax", {}).get("val", self.DEFAULT_VMAX)
+        self.t_max_nm = cfg.get("tmax", {}).get("val", self.DEFAULT_TMAX)
+        self.gearing = cfg.get("gearing", {}).get("val", self.DEFAULT_GEARING)
+
+        # Friction
+        self.cof = cfg.get("cof", {}).get("val", self.DEFAULT_COF)
+        self.g = self.GRAVITY
+
+        # Safety margins for real-world tracking (leave headroom for Ramsete corrections)
+        self.torque_headroom = cfg.get("torqueHeadroom", {}).get("val", self.DEFAULT_TORQUE_HEADROOM)
+        self.speed_headroom = cfg.get("speedHeadroom", {}).get("val", self.DEFAULT_SPEED_HEADROOM)
+
+    def get_max_force_at_velocity(self, v_wheel, apply_headroom=True):
         """
         Calculates max force magnitude a motor can apply at a given wheel velocity.
-        Uses a linear motor curve (symmetric braking/driving limit).
+
+        Uses a linear motor curve (symmetric braking/driving limit):
+        - At v=0: max force = t_max / wheel_radius
+        - At v=v_max: max force = 0
+
+        Args:
+            v_wheel: Wheel velocity in m/s
+            apply_headroom: If True, applies safety margin for real-world tracking
+
+        Returns:
+            Maximum force in Newtons
         """
         omega = (v_wheel / self.wheel_radius) * self.gearing
         torque = self.t_max_nm * (1.0 - abs(omega) / self.v_max_rad_s)
         torque = max(0, torque)
         force = (torque / self.wheel_radius) * self.gearing
+        if apply_headroom:
+            force *= self.torque_headroom
         return force
 
-    @property
-    def max_linear_speed(self):
+    def max_linear_speed(self, apply_headroom=True):
         """No-load linear speed of the wheel (m/s)."""
-        return self.v_max_rad_s * self.wheel_radius
+        speed = self.v_max_rad_s * self.wheel_radius
+        if apply_headroom:
+            speed *= self.speed_headroom
+        return speed
+
 
 class DifferentialDriveModel:
+    """
+    Differential drive robot dynamics model.
+
+    Calculates required wheel forces for given motion and checks
+    physical constraints (motor limits, traction limits).
+    """
+
     def __init__(self, config: RobotConfig):
+        """
+        Initialize dynamics model with robot configuration.
+
+        Args:
+            config: RobotConfig object containing physical parameters
+        """
         self.cfg = config
 
     def get_dynamics(self, vl, vr, al, ar):
         """
-        Returns required forces and moments for given velocities and accelerations.
+        Calculate required wheel forces for given velocities and accelerations.
+
+        Uses differential drive kinematics:
+        - Linear acceleration: a = (al + ar) / 2
+        - Angular acceleration: alpha = (ar - al) / track_width
+
+        Args:
+            vl: Left wheel velocity (m/s)
+            vr: Right wheel velocity (m/s)
+            al: Left wheel acceleration (m/s²)
+            ar: Right wheel acceleration (m/s²)
+
+        Returns:
+            Tuple of (fl, fr) - Left and right wheel forces (N)
         """
-        # Linear acceleration: a = (al + ar) / 2
-        # Angular acceleration: alpha = (ar - al) / track_width
+        # Linear and angular acceleration
         a = (al + ar) / 2.0
         alpha = (ar - al) / self.cfg.track_width
-        
-        # F_total = m * a
-        # M_total = I * alpha
+
+        # Required total force and moment
         f_total = self.cfg.mass * a
         m_total = self.cfg.inertia * alpha
-        
+
+        # Solve for individual wheel forces
         # f_total = fl + fr
-        # m_total = (fr - fl) * (w / 2)
-        # Solve for fl, fr:
-        # fr - fl = 2 * m_total / w
-        # 2*fr = f_total + 2 * m_total / w
+        # m_total = (fr - fl) * (track_width / 2)
         fr = (f_total + (2.0 * m_total / self.cfg.track_width)) / 2.0
         fl = f_total - fr
-        
+
         return fl, fr
 
-    def check_constraints(self, vl, vr, al, ar):
+    def check_constraints(self, vl, vr, al, ar, apply_headroom=True):
         """
-        Checks if the state/control is physically possible.
-        Returns a list of violations (negative if OK, positive if violating).
+        Check if given state violates motor or traction limits.
+
+        Args:
+            vl: Left wheel velocity (m/s)
+            vr: Right wheel velocity (m/s)
+            al: Left wheel acceleration (m/s²)
+            ar: Right wheel acceleration (m/s²)
+            apply_headroom: If True, applies safety margin for real-world tracking
+
+        Returns:
+            List of violations [left_motor_violation, right_motor_violation, traction_violation]
+            Values are 0 if no violation, positive if violated
         """
         fl, fr = self.get_dynamics(vl, vr, al, ar)
-        
-        # 1. Motor limits
-        max_fl = self.cfg.get_max_force_at_velocity(vl)
-        max_fr = self.cfg.get_max_force_at_velocity(vr)
-        
-        violations = [
-            abs(fl) - max_fl,
-            abs(fr) - max_fr
-        ]
-        
-        # 2. Traction limit (Simplified: total force <= mu * m * g)
-        # More accurately: each wheel force <= mu * N_wheel
-        # For simplicity in FLL (where robots are often unbalanced):
-        # abs(fl) + abs(fr) <= mu * m * g
-        f_traction_max = self.cfg.cof * self.cfg.mass * self.cfg.g
-        violations.append(abs(fl) + abs(fr) - f_traction_max)
-        
-        return violations
+
+        # Motor force limits
+        fl_max = self.cfg.get_max_force_at_velocity(vl, apply_headroom)
+        fr_max = self.cfg.get_max_force_at_velocity(vr, apply_headroom)
+
+        left_motor_violation = max(0, abs(fl) - fl_max)
+        right_motor_violation = max(0, abs(fr) - fr_max)
+
+        # Traction limit (friction circle)
+        # Max traction force = cof * normal force
+        traction_limit = self.cfg.cof * self.cfg.mass * self.cfg.g
+        traction_violation = max(0, abs(fl) + abs(fr) - traction_limit)
+
+        return [left_motor_violation, right_motor_violation, traction_violation]

@@ -7,7 +7,7 @@ def resample_to_fixed_dt(samples, target_dt: float = 0.02, track_width: float = 
     Linearly resample a variable-timestep trajectory to a fixed controller dt.
 
     Returns a list of dicts with keys:
-        t, x, y, heading, vl, vr, v, omega
+        t, x, y, heading, vl, vr, v, omega, event (optional)
     """
     if not samples:
         return []
@@ -18,6 +18,12 @@ def resample_to_fixed_dt(samples, target_dt: float = 0.02, track_width: float = 
     h_src = np.array([s["heading"] for s in samples])
     vl_src = np.array([s["vl"] for s in samples])
     vr_src = np.array([s["vr"] for s in samples])
+
+    # Collect events from source samples
+    event_times = {}
+    for i, s in enumerate(samples):
+        if "event" in s:
+            event_times[s["t"]] = s["event"]
 
     total_t = t_src[-1]
     num_steps = int(np.floor(total_t / target_dt)) + 1
@@ -35,6 +41,7 @@ def resample_to_fixed_dt(samples, target_dt: float = 0.02, track_width: float = 
         return float(val_arr[idx] + (val_arr[idx + 1] - val_arr[idx]) * frac)
 
     out = []
+    assigned_events = set()  # Track which events have been assigned
     for t in target_times:
         if t > total_t:
             break
@@ -42,18 +49,38 @@ def resample_to_fixed_dt(samples, target_dt: float = 0.02, track_width: float = 
         vr = lerp(t, t_src, vr_src)
         v = (vl + vr) / 2.0
         omega = (vr - vl) / track_width
-        out.append(
-            {
-                "t": round(float(t), 6),
-                "x": round(lerp(t, t_src, x_src), 6),
-                "y": round(lerp(t, t_src, y_src), 6),
-                "heading": round(lerp(t, t_src, h_src), 6),
-                "vl": round(vl, 6),
-                "vr": round(vr, 6),
-                "v": round(v, 6),
-                "omega": round(omega, 6),
-            }
-        )
+        
+        sample_dict = {
+            "t": round(float(t), 6),
+            "x": round(lerp(t, t_src, x_src), 6),
+            "y": round(lerp(t, t_src, y_src), 6),
+            "heading": round(lerp(t, t_src, h_src), 6),
+            "vl": round(vl, 6),
+            "vr": round(vr, 6),
+            "v": round(v, 6),
+            "omega": round(omega, 6),
+        }
+        
+        # Find the closest event to this time
+        closest_event_t = None
+        closest_event_name = None
+        closest_dist = float('inf')
+        for event_t, event_name in event_times.items():
+            # Skip if already assigned
+            if event_t in assigned_events:
+                continue
+            dist = abs(event_t - t)
+            if dist < closest_dist:
+                closest_dist = dist
+                closest_event_t = event_t
+                closest_event_name = event_name
+        
+        # Include event if it's within one timestep of this sample
+        if closest_event_name is not None and closest_dist <= target_dt:
+            sample_dict["event"] = closest_event_name
+            assigned_events.add(closest_event_t)
+        
+        out.append(sample_dict)
     return out
 
 
@@ -82,6 +109,101 @@ def write_controller_file(
         json.dump(ctrl, f, indent=1)
 
     print(f"Exported {ctrl['num_samples']} controller samples at dt={target_dt}s to {output_file}")
+
+
+def write_python_file(input_traj_file: str, output_file: str):
+    """
+    Export trajectory samples and robot config as a Python file.
+
+    Output format:
+        # Robot configuration
+        config = {
+            "mass": 0.723,
+            "inertia": 0.0024,
+            "track_width": 0.0965,
+            "wheel_radius": 0.028,
+            "v_max_rad_s": 15.7,
+            "t_max_nm": 0.04,
+            "gearing": 1.0,
+            "cof": 0.65
+        }
+
+        # Trajectory samples
+        samples = [
+            {"t": 0.0, "x": 0.0, "y": 0.0, "heading": 0.0, "vl": 0.0, "vr": 0.0, "omega": 0.0},
+            {"t": 0.02, "x": 0.01, "y": 0.0, "heading": 0.0, "vl": 0.5, "vr": 0.5, "omega": 0.0},
+            # ... more samples
+        ]
+    """
+    with open(input_traj_file, "r") as f:
+        traj_data = json.load(f)
+
+    samples = traj_data["trajectory"]["samples"]
+    cfg = traj_data["trajectory"]["config"]
+
+    # Extract robot config parameters
+    config_dict = {
+        "mass": cfg.get("mass", {}).get("val", 0.8),
+        "inertia": cfg.get("inertia", {}).get("val", 0.001),
+        "track_width": cfg.get("differentialTrackWidth", {}).get("val", 0.0965),
+        "wheel_radius": cfg.get("radius", {}).get("val", 0.028),
+        "v_max_rad_s": cfg.get("vmax", {}).get("val", 15.7),
+        "t_max_nm": cfg.get("tmax", {}).get("val", 0.04),
+        "gearing": cfg.get("gearing", {}).get("val", 1.0),
+        "cof": cfg.get("cof", {}).get("val", 1.0),
+    }
+
+    # Build Python code string
+    lines = [
+        "# Trajectory exported from FLL Trajectory Optimizer",
+        f"# Source: {input_traj_file}",
+        f"# Number of samples: {len(samples)}",
+        "",
+        "# Robot configuration parameters",
+        "config = {",
+    ]
+
+    for key, value in config_dict.items():
+        if isinstance(value, float):
+            lines.append(f'    "{key}": {value:.6f},')
+        else:
+            lines.append(f'    "{key}": {value},')
+
+    lines.append("}")
+    lines.append("")
+    lines.append("# Trajectory samples")
+    lines.append("samples = [")
+
+    for i, s in enumerate(samples):
+        # Build sample dict string
+        sample_items = []
+        for key in ["t", "x", "y", "heading", "vl", "vr", "omega"]:
+            if key in s:
+                value = s[key]
+                if isinstance(value, float):
+                    sample_items.append(f'    "{key}": {value:.6f}')
+                else:
+                    sample_items.append(f'    "{key}": {value}')
+
+        # Add event if present
+        if "event" in s:
+            sample_items.append(f'    "event": "{s["event"]}"')
+
+        sample_str = "    {" + ",\n".join(sample_items) + "\n  }"
+
+        if i == len(samples) - 1:
+            sample_str = sample_str.rstrip()  # Remove trailing comma for last item
+        else:
+            sample_str += ","
+
+        lines.append(sample_str)
+
+    lines.append("]")
+
+    with open(output_file, "w") as f:
+        f.write("\n".join(lines))
+
+    print(f"Exported {len(samples)} samples and config to Python file: {output_file}")
 
 
 if __name__ == "__main__":

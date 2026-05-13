@@ -15,11 +15,13 @@ Functions for validating trajectories via forward integration and constraint aud
 Forward-integrates differential-drive kinematics from the optimized wheel-velocity profile using RK4 integration.
 
 **Parameters:**
+
 - `samples` (list[dict]): Trajectory samples from optimizer output
 - `robot_cfg` (RobotConfig): Robot configuration object
 - `fine_dt` (float): Integration timestep in seconds (default: 0.001)
 
 **Returns:**
+
 - (tuple): `(integrated, errors)`
   - `integrated` (list[dict]): List of integrated states with keys `{t, x, y, heading}`
   - `errors` (dict): Error metrics:
@@ -30,6 +32,7 @@ Forward-integrates differential-drive kinematics from the optimized wheel-veloci
     - `final_heading_error_rad`: Final heading error in radians
 
 **Method:**
+
 - Interpolates wheel velocities at fine timesteps
 - Uses RK4 integration for kinematic equations:
   ```
@@ -42,6 +45,7 @@ Forward-integrates differential-drive kinematics from the optimized wheel-veloci
 - Computes heading error with angle wrapping to [-π, π]
 
 **Usage Example:**
+
 ```python
 from validator import forward_integrate
 from robot_model import RobotConfig
@@ -65,15 +69,18 @@ print(f"Final position error: {errors['final_pos_error_m']:.6f} m")
 
 ---
 
-### `audit_constraints(samples, robot_cfg: RobotConfig) -> dict`
+### `audit_constraints(samples, robot_cfg: RobotConfig, apply_headroom=True) -> dict`
 
 Re-evaluates motor and traction limits for each sample to detect constraint violations.
 
 **Parameters:**
+
 - `samples` (list[dict]): Trajectory samples from optimizer output
 - `robot_cfg` (RobotConfig): Robot configuration object
+- `apply_headroom` (bool): If True, applies safety margin for real-world tracking (default: True)
 
 **Returns:**
+
 - (dict): Audit results with keys:
   - `left_motor_force`: Max left motor force violation (N)
   - `right_motor_force`: Max right motor force violation (N)
@@ -82,11 +89,13 @@ Re-evaluates motor and traction limits for each sample to detect constraint viol
   - `violating_sample_indices`: List of indices of violating samples
 
 **Constraints Checked:**
+
 1. Left motor force: `|fl| <= max_force_at_velocity(vl)`
 2. Right motor force: `|fr| <= max_force_at_velocity(vr)`
 3. Traction limit: `|fl| + |fr| <= cof * mass * g`
 
 **Usage Example:**
+
 ```python
 from validator import audit_constraints
 from robot_model import RobotConfig
@@ -120,9 +129,11 @@ else:
 Computes basic trajectory metrics from sample data.
 
 **Parameters:**
+
 - `samples` (list[dict]): Trajectory samples from optimizer output
 
 **Returns:**
+
 - (dict): Metrics with keys:
   - `total_time_s`: Total trajectory duration in seconds
   - `path_length_m`: Total path length in meters
@@ -132,6 +143,7 @@ Computes basic trajectory metrics from sample data.
   - `max_jerk_m_s3`: Maximum jerk in m/s³
 
 **Usage Example:**
+
 ```python
 from validator import compute_metrics
 import json
@@ -145,24 +157,27 @@ metrics = compute_metrics(samples)
 print(f"Total time: {metrics['total_time_s']:.3f} s")
 print(f"Path length: {metrics['path_length_m']:.3f} m")
 print(f"Max speed: {metrics['max_linear_speed_m_s']:.3f} m/s")
-print(f"Max acceleration: {metrics['max_accel_m_s2']:.3f} m/s²")
 ```
 
 ---
 
-### `validate_trajectory(traj_file: str, config_file: str) -> tuple`
+### `validate_trajectory(traj_file: str, config_file: str, apply_headroom=True) -> tuple`
 
 CLI entry point for trajectory validation. Loads files, runs validation, and prints a human-readable report.
 
 **Parameters:**
+
 - `traj_file` (str): Path to `.traj` file
 - `config_file` (str): Path to `.chor` config file
+- `apply_headroom` (bool): If True, applies safety margin for real-world tracking (default: True)
 
 **Returns:**
+
 - (tuple): `(metrics, audit, errors)` - Results from `compute_metrics`, `audit_constraints`, and `forward_integrate`
 
 **Output:**
 Prints a comprehensive validation report including:
+
 - Sample count and config file
 - Basic metrics (time, length, speeds, accelerations)
 - Constraint audit (violations and magnitudes)
@@ -170,11 +185,13 @@ Prints a comprehensive validation report including:
 - Pass/fail verdict
 
 **Pass Criteria:**
+
 - `max_pos_error_m < 0.01` meters
 - `final_pos_error_m < 0.01` meters
 - `num_violating_samples == 0`
 
 **Usage:**
+
 ```bash
 python validator.py output.traj fll_choreo.chor
 ```
@@ -192,11 +209,13 @@ Functions for resampling trajectories to fixed timesteps for controller consumpt
 Linearly resamples a variable-timestep trajectory to a fixed controller timestep.
 
 **Parameters:**
+
 - `samples` (list[dict]): Trajectory samples from optimizer output
 - `target_dt` (float): Fixed timestep in seconds (default: 0.02)
 - `track_width` (float): Robot track width in meters (default: 0.0965)
 
 **Returns:**
+
 - (list[dict]): Resampled samples with keys:
   - `t`: Timestamp in seconds
   - `x`: X position in meters
@@ -208,11 +227,13 @@ Linearly resamples a variable-timestep trajectory to a fixed controller timestep
   - `omega`: Angular velocity in rad/s
 
 **Method:**
+
 - Uses linear interpolation between source samples
 - Generates samples at `t = 0, target_dt, 2*target_dt, ...` until trajectory end
 - Computes derived quantities (v, omega) from interpolated wheel velocities
 
 **Usage Example:**
+
 ```python
 from export import resample_to_fixed_dt
 import json
@@ -236,11 +257,13 @@ print(f"First sample: {resampled[0]}")
 Returns a JSON-serializable dict with controller-ready samples.
 
 **Parameters:**
+
 - `samples` (list[dict]): Trajectory samples from optimizer output
 - `target_dt` (float): Fixed timestep in seconds (default: 0.02)
 - `track_width` (float): Robot track width in meters (default: 0.0965)
 
 **Returns:**
+
 - (dict): Controller profile with keys:
   - `format`: String identifier ("controller_profile")
   - `version`: Format version (1)
@@ -249,6 +272,7 @@ Returns a JSON-serializable dict with controller-ready samples.
   - `samples`: List of resampled sample dicts
 
 **Output Format:**
+
 ```json
 {
   "format": "controller_profile",
@@ -278,21 +302,25 @@ Returns a JSON-serializable dict with controller-ready samples.
 Loads a trajectory file, resamples it, and writes a controller-ready JSON file.
 
 **Parameters:**
+
 - `input_traj_file` (str): Path to input `.traj` file
 - `output_file` (str): Path to output controller JSON file
 - `target_dt` (float): Fixed timestep in seconds (default: 0.02)
 - `track_width` (float): Robot track width in meters (default: 0.0965)
 
 **Side Effects:**
+
 - Creates/overwrites `output_file` with controller profile JSON
 - Prints confirmation message with sample count
 
 **Usage:**
+
 ```bash
 python export.py output.traj output_controller.json 0.02
 ```
 
 **Or from Python:**
+
 ```python
 from export import write_controller_file
 
@@ -303,3 +331,64 @@ write_controller_file(
     track_width=0.0965
 )
 ```
+
+---
+
+### `write_python_file(input_traj_file: str, output_file: str)`
+
+Loads a trajectory file and exports it as a Python file with trajectory samples and robot configuration.
+
+**Parameters:**
+
+- `input_traj_file` (str): Path to input `.traj` file
+- `output_file` (str): Path to output Python file
+
+**Side Effects:**
+
+- Creates/overwrites `output_file` with Python code containing:
+  - Robot configuration parameters as a `config` dictionary
+  - Trajectory samples as a `samples` list
+- Prints confirmation message with sample count
+
+**Output Format:**
+
+```python
+# Trajectory exported from FLL Trajectory Optimizer
+# Source: input_traj_file
+# Number of samples: 136
+
+# Robot configuration parameters
+config = {
+    "mass": 0.723000,
+    "inertia": 0.002400,
+    "track_width": 0.096500,
+    "wheel_radius": 0.028000,
+    "v_max_rad_s": 15.700000,
+    "t_max_nm": 0.040000,
+    "gearing": 1.000000,
+    "cof": 0.400000,
+}
+
+# Trajectory samples
+samples = [
+    {"t": 0.000000, "x": 0.000000, "y": 0.000000, "heading": 0.000000, "vl": 0.000000, "vr": 0.000000, "omega": 0.000000},
+    {"t": 0.100176, "x": 0.001904, "y": 0.000030, "heading": 0.015507, "vl": 0.023083, "vr": 0.052958, "omega": 0.309586},
+    # ... more samples
+]
+```
+
+**Usage:**
+
+```python
+from export import write_python_file
+
+write_python_file('output.traj', 'trajectory.py')
+```
+
+**Or from CLI:**
+
+```bash
+python main.py -c config.chor -w waypoints.json -o output.traj --export-format python
+```
+
+**Use case:** Direct integration with Python-based robot controllers or analysis scripts, avoiding JSON parsing overhead.

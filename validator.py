@@ -107,17 +107,22 @@ def forward_integrate(samples, robot_cfg: RobotConfig, fine_dt: float = 0.001):
     return integrated, errors
 
 
-def audit_constraints(samples, robot_cfg: RobotConfig):
+def audit_constraints(samples, robot_cfg: RobotConfig, apply_headroom=True):
     """
     Re-evaluate motor and traction limits for each sample.
     Returns max violations and a list of violating sample indices.
+    
+    Args:
+        samples: Trajectory samples
+        robot_cfg: Robot configuration
+        apply_headroom: If True, applies safety margin for real-world tracking
     """
     model = DifferentialDriveModel(robot_cfg)
     max_violations = [0.0, 0.0, 0.0]  # fl motor, fr motor, traction
     violating_indices = []
 
     for i, s in enumerate(samples):
-        violations = model.check_constraints(s["vl"], s["vr"], s["al"], s["ar"])
+        violations = model.check_constraints(s["vl"], s["vr"], s["al"], s["ar"], apply_headroom)
         for j, v in enumerate(violations):
             if v > 1e-6:
                 max_violations[j] = max(max_violations[j], v)
@@ -169,10 +174,15 @@ def compute_metrics(samples):
     }
 
 
-def validate_trajectory(traj_file: str, config_file: str):
+def validate_trajectory(traj_file: str, config_file: str, apply_headroom=True):
     """
     CLI entry point: load a .traj file and a .chor config, run validation,
     and print a human-readable report.
+    
+    Args:
+        traj_file: Path to trajectory file
+        config_file: Path to config file
+        apply_headroom: If True, applies safety margin for real-world tracking
     """
     with open(traj_file, "r") as f:
         traj_data = json.load(f)
@@ -184,6 +194,8 @@ def validate_trajectory(traj_file: str, config_file: str):
 
     print(f"\n=== Validation Report: {traj_file} ===")
     print(f"Samples: {len(samples)} | Config: {config_file}")
+    if apply_headroom:
+        print(f"Safety margins: torque_headroom={robot_cfg.torque_headroom:.2f}, speed_headroom={robot_cfg.speed_headroom:.2f}")
 
     # Metrics
     metrics = compute_metrics(samples)
@@ -192,7 +204,7 @@ def validate_trajectory(traj_file: str, config_file: str):
         print(f"  {k}: {v:.4f}")
 
     # Constraint audit
-    audit = audit_constraints(samples, robot_cfg)
+    audit = audit_constraints(samples, robot_cfg, apply_headroom)
     print("\n-- Constraint Audit --")
     print(f"  Violating samples: {audit['num_violating_samples']}")
     if audit["num_violating_samples"]:

@@ -15,47 +15,62 @@ RobotConfig(config_dict: dict)
 ```
 
 **Parameters:**
+
 - `config_dict` (dict): Configuration dictionary with a `"config"` key containing robot parameters
 
 **Extracted Parameters:**
-- `mass` (float): Robot mass in kg (default: 0.8)
-- `inertia` (float): Rotational inertia in kg·m² (default: 0.001)
+
+- `mass` (float): Robot mass in kg (default: 0.723)
+- `inertia` (float): Rotational inertia in kg·m² (default: 0.0024)
 - `track_width` (float): Distance between wheel centers in m (default: 0.0965)
 - `wheel_radius` (float): Wheel radius in m (default: 0.028)
 - `v_max_rad_s` (float): Motor no-load speed in rad/s (default: 15.7)
 - `t_max_nm` (float): Motor stall torque in N·m (default: 0.04)
 - `gearing` (float): Gear ratio (default: 1.0)
-- `cof` (float): Coefficient of friction (default: 1.5)
+- `cof` (float): Coefficient of friction (default: 0.45)
 - `g` (float): Gravitational acceleration (9.81 m/s²)
+- `torque_headroom` (float): Safety margin for motor torque limits (default: 0.85)
+- `speed_headroom` (float): Safety margin for wheel speed limits (default: 0.90)
 
 #### Methods
 
-##### `get_max_force_at_velocity(v_wheel: float) -> float`
+##### `get_max_force_at_velocity(v_wheel: float, apply_headroom=True) -> float`
 
 Calculates the maximum force magnitude a motor can apply at a given wheel velocity.
 
 Uses a linear motor curve model where torque decreases linearly with speed until zero at no-load speed.
 
 **Parameters:**
+
 - `v_wheel` (float): Wheel linear velocity in m/s
+- `apply_headroom` (bool): If True, applies safety margin for real-world tracking (default: True)
 
 **Returns:**
+
 - (float): Maximum force in Newtons
 
 **Model:**
-```
+
+```python
 omega = (v_wheel / wheel_radius) * gearing
 torque = t_max * (1 - |omega| / v_max_rad_s)
 torque = max(0, torque)  # No braking force above no-load speed
 force = (torque / wheel_radius) * gearing
+if apply_headroom:
+    force *= torque_headroom
 ```
 
-##### `max_linear_speed` (property)
+##### `max_linear_speed(apply_headroom=True) -> float`
 
 Returns the no-load linear speed of the wheel in m/s.
 
+**Parameters:**
+
+- `apply_headroom` (bool): If True, applies safety margin for real-world tracking (default: True)
+
 **Returns:**
-- (float): `v_max_rad_s * wheel_radius`
+
+- (float): `v_max_rad_s * wheel_radius * (speed_headroom if apply_headroom else 1.0)`
 
 ---
 
@@ -70,6 +85,7 @@ DifferentialDriveModel(config: RobotConfig)
 ```
 
 **Parameters:**
+
 - `config` (RobotConfig): Robot configuration object
 
 #### Methods
@@ -79,15 +95,18 @@ DifferentialDriveModel(config: RobotConfig)
 Computes the required wheel forces to achieve given velocities and accelerations.
 
 **Parameters:**
+
 - `vl` (float): Left wheel velocity in m/s
 - `vr` (float): Right wheel velocity in m/s
 - `al` (float): Left wheel acceleration in m/s²
 - `ar` (float): Right wheel acceleration in m/s²
 
 **Returns:**
+
 - (tuple): `(fl, fr)` - Left and right wheel forces in Newtons
 
 **Derivation:**
+
 ```
 Linear acceleration: a = (al + ar) / 2
 Angular acceleration: alpha = (ar - al) / track_width
@@ -103,28 +122,33 @@ Solve for wheel forces:
   fl = F_total - fr
 ```
 
-##### `check_constraints(vl: float, vr: float, al: float, ar: float) -> list[float]`
+##### `check_constraints(vl: float, vr: float, al: float, ar: float, apply_headroom=True) -> list[float]`
 
 Checks if a state/control is physically feasible.
 
 **Parameters:**
+
 - `vl` (float): Left wheel velocity in m/s
 - `vr` (float): Right wheel velocity in m/s
 - `al` (float): Left wheel acceleration in m/s²
 - `ar` (float): Right wheel acceleration in m/s²
+- `apply_headroom` (bool): If True, applies safety margin for real-world tracking (default: True)
 
 **Returns:**
-- (list): Violation magnitudes (negative if OK, positive if violating)
+
+- (list): Violation magnitudes (0 if OK, positive if violating)
   - Index 0: Left motor force violation (N)
   - Index 1: Right motor force violation (N)
   - Index 2: Traction limit violation (N)
 
 **Constraints Checked:**
+
 1. Motor limits: `|fl| <= max_force_at_velocity(vl)`
 2. Motor limits: `|fr| <= max_force_at_velocity(vr)`
 3. Traction limit: `|fl| + |fr| <= cof * mass * g`
 
 **Usage Example:**
+
 ```python
 from robot_model import RobotConfig, DifferentialDriveModel
 

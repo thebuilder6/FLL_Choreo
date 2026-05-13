@@ -8,14 +8,23 @@ class TrajectoryOptimizer:
         self.config = config
         self.model = DifferentialDriveModel(config)
 
-    def solve(self, waypoints, num_samples_per_segment=10, accuracy_weight=0.0):
+    def solve(self, waypoints, num_samples_per_segment=10, accuracy_weight=0.0, stop_waypoint_indices=None, waypoint_events=None, apply_headroom=True):
         """
         waypoints: list of (x, y, heading)
         heading is in radians. None means unconstrained.
         accuracy_weight: weight for smoothness/jerk penalty (0 = pure time-optimal).
+        stop_waypoint_indices: list of waypoint indices where robot must come to rest (vl=vr=0).
+                             None means only start and end at rest.
+        waypoint_events: dict mapping waypoint indices to event names (e.g., {2: "lower_arm", 5: "release"}).
+        apply_headroom: If True, applies safety margin for real-world tracking.
         """
         num_segments = len(waypoints) - 1
         N = num_segments * num_samples_per_segment + 1
+
+        if stop_waypoint_indices is None:
+            stop_waypoint_indices = []
+        if waypoint_events is None:
+            waypoint_events = {}
 
         opti = ca.Opti()
 
@@ -55,7 +64,7 @@ class TrajectoryOptimizer:
         opti.subject_to(theta <= 100)
 
         # Wheel-speed bounds derived from motor no-load speed
-        v_max = self.config.max_linear_speed
+        v_max = self.config.max_linear_speed(apply_headroom)
         # Use 99 % of no-load speed to avoid the exact zero-force singularity
         v_bound = 0.99 * v_max
         opti.subject_to(vl >= -v_bound)
@@ -91,8 +100,8 @@ class TrajectoryOptimizer:
 
             # Force calculations (evaluated at start of interval to match legacy behaviour)
             fl, fr = self._dynamics_symbolic(vl[k], vr[k], al, ar)
-            max_fl = self._max_force_symbolic(vl[k])
-            max_fr = self._max_force_symbolic(vr[k])
+            max_fl = self._max_force_symbolic(vl[k], apply_headroom)
+            max_fr = self._max_force_symbolic(vr[k], apply_headroom)
 
             # Motor limits
             opti.subject_to(ca.fabs(fl) <= max_fl)
@@ -116,6 +125,14 @@ class TrajectoryOptimizer:
         opti.subject_to(vr[0] == 0)
         opti.subject_to(vl[N - 1] == 0)
         opti.subject_to(vr[N - 1] == 0)
+
+        # Intermediate stop waypoints
+        for stop_idx in stop_waypoint_indices:
+            if stop_idx < 0 or stop_idx >= len(waypoints):
+                continue
+            sample_idx = stop_idx * num_samples_per_segment
+            opti.subject_to(vl[sample_idx] == 0)
+            opti.subject_to(vr[sample_idx] == 0)
 
         # Initial guess (linear interpolation between waypoints, zero wheelspeed)
         guess = self._build_initial_guess(waypoints, num_samples_per_segment, N)
@@ -144,14 +161,14 @@ class TrajectoryOptimizer:
             X_val = np.array(sol.value(X))
             params = np.concatenate([[dt_val], X_val.flatten()])
             print("Optimization converged. Total time: {:.4f}s".format(dt_val * (N - 1)))
-            return self.format_output(params, N)
+            return self.format_output(params, N, num_samples_per_segment, waypoint_events)
         except Exception as e:
             print("Optimization failed or timed out:", e)
             # Return best-effort from debug values
             dt_val = float(opti.debug.value(dt))
             X_val = np.array(opti.debug.value(X))
             params = np.concatenate([[dt_val], X_val.flatten()])
-            return self.format_output(params, N)
+            return self.format_output(params, N, num_samples_per_segment, waypoint_events)
 
     def _dynamics_symbolic(self, vl, vr, al, ar):
         """CasADi version of DifferentialDriveModel.get_dynamics."""
@@ -163,7 +180,7 @@ class TrajectoryOptimizer:
         fl = f_total - fr
         return fl, fr
 
-    def _max_force_symbolic(self, v_wheel):
+    def _max_force_symbolic(self, v_wheel, apply_headroom=True):
         """CasADi version of RobotConfig.get_max_force_at_velocity."""
         omega = (v_wheel / self.config.wheel_radius) * self.config.gearing
         torque = self.config.t_max_nm * (1.0 - ca.fabs(omega) / self.config.v_max_rad_s)
@@ -171,6 +188,8 @@ class TrajectoryOptimizer:
         # This matches the legacy scipy implementation.
         torque = ca.fmax(0, torque)
         force = (torque / self.config.wheel_radius) * self.config.gearing
+        if apply_headroom:
+            force *= self.config.torque_headroom
         return force
 
     def _build_initial_guess(self, waypoints, num_samples_per_segment, N):
@@ -189,20 +208,53 @@ class TrajectoryOptimizer:
                 frac = j / num_samples_per_segment
                 x = p1[0] + (p2[0] - p1[0]) * frac
                 y = p1[1] + (p2[1] - p1[1]) * frac
-                theta = p1[2] if p1[2] is not None else 0.0
+                
+                # Compute heading based on local path direction
                 if p1[2] is not None and p2[2] is not None:
+                    # Both headings known: interpolate
                     diff = (p2[2] - p1[2] + np.pi) % (2 * np.pi) - np.pi
                     theta = p1[2] + diff * frac
+                elif p1[2] is not None:
+                    # Only start heading known: blend towards path direction
+                    path_dir = np.arctan2(p2[1] - p1[1], p2[0] - p1[0])
+                    # Smoothly transition from constrained heading to path direction
+                    diff = (path_dir - p1[2] + np.pi) % (2 * np.pi) - np.pi
+                    theta = p1[2] + diff * frac
+                elif p2[2] is not None:
+                    # Only end heading known: blend from path direction
+                    path_dir = np.arctan2(p2[1] - p1[1], p2[0] - p1[0])
+                    diff = (p2[2] - path_dir + np.pi) % (2 * np.pi) - np.pi
+                    theta = path_dir + diff * frac
+                else:
+                    # No heading known: use local path direction
+                    # Look ahead to next waypoint for better direction estimate
+                    if i + 2 < len(waypoints):
+                        p3 = waypoints[i + 2]
+                        # Blend direction to p2 with direction to p3
+                        dir_to_p2 = np.arctan2(p2[1] - p1[1], p2[0] - p1[0])
+                        dir_to_p3 = np.arctan2(p3[1] - p1[1], p3[0] - p1[0])
+                        # Weight by progress through segment
+                        theta = (1 - frac) * dir_to_p2 + frac * dir_to_p3
+                    else:
+                        theta = np.arctan2(p2[1] - p1[1], p2[0] - p1[0])
+                
                 guess.extend([x, y, theta, 0.0, 0.0])
         return np.array(guess)
 
-    def format_output(self, params, N):
+    def format_output(self, params, N, num_samples_per_segment=10, waypoint_events=None):
         dt = params[0]
         states = params[1:].reshape((N, 5))
         samples = []
         for k in range(N):
             s = states[k]
             vl, vr = s[3], s[4]
+            
+            # Check if this sample corresponds to a waypoint with an event
+            event = None
+            if waypoint_events and k % num_samples_per_segment == 0:
+                waypoint_idx = k // num_samples_per_segment
+                if waypoint_idx in waypoint_events:
+                    event = waypoint_events[waypoint_idx]
             if k < N - 1:
                 vl_next, vr_next = states[k + 1][3], states[k + 1][4]
                 al, ar = (vl_next - vl) / dt, (vr_next - vr) / dt
@@ -210,19 +262,20 @@ class TrajectoryOptimizer:
                 al, ar = 0.0, 0.0
 
             fl, fr = self.model.get_dynamics(vl, vr, al, ar)
-            samples.append(
-                {
-                    "t": float(k * dt),
-                    "x": float(s[0]),
-                    "y": float(s[1]),
-                    "heading": float(s[2]),
-                    "vl": float(vl),
-                    "vr": float(vr),
-                    "omega": float((vr - vl) / self.config.track_width),
-                    "al": float(al),
-                    "ar": float(ar),
-                    "fl": float(fl),
-                    "fr": float(fr),
-                }
-            )
+            sample_dict = {
+                "t": float(k * dt),
+                "x": float(s[0]),
+                "y": float(s[1]),
+                "heading": float(s[2]),
+                "vl": float(vl),
+                "vr": float(vr),
+                "omega": float((vr - vl) / self.config.track_width),
+                "al": float(al),
+                "ar": float(ar),
+                "fl": float(fl),
+                "fr": float(fr),
+            }
+            if event is not None:
+                sample_dict["event"] = event
+            samples.append(sample_dict)
         return samples
