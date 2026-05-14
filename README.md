@@ -209,7 +209,7 @@ See `project_plan.md` for details.
 ## TODO
 - rework Robot definition ".chor" file no need to keep choreos format
 - move inputs and outputs into own directory
-
+- replace the linear initial guess with a Dubins/Reeds-Shepp Curve generator
 
 
 
