@@ -1,15 +1,16 @@
+from typing import List, Dict, Tuple, Any, Optional
 import numpy as np
 import casadi as ca
 from robot_model import RobotConfig, DifferentialDriveModel
 
 
 class TrajectoryOptimizer:
-    def __init__(self, config: RobotConfig):
+    def __init__(self, config: RobotConfig) -> None:
         self.config = config
         self.model = DifferentialDriveModel(config)
-        self.iteration_history = []  # Store convergence data
+        self.iteration_history: List[Dict[str, Any]] = []  # Store convergence data
 
-    def solve(self, waypoints, num_samples_per_segment=10, accuracy_weight=0.0, stop_waypoint_indices=None, waypoint_events=None, apply_headroom=True, verbose=True, capture_iterations=False):
+    def solve(self, waypoints: List[Tuple[float, float, Optional[float]]], num_samples_per_segment: int = 10, accuracy_weight: float = 0.0, stop_waypoint_indices: Optional[List[int]] = None, waypoint_events: Optional[Dict[int, str]] = None, apply_headroom: bool = True, verbose: bool = True, capture_iterations: bool = False) -> List[Dict[str, Any]]:
         """
         waypoints: list of (x, y, heading)
         heading is in radians. None means unconstrained.
@@ -215,7 +216,7 @@ class TrajectoryOptimizer:
             # TODO: Collect failure metrics for analysis
             return self.format_output(params, N, num_samples_per_segment, waypoint_events)
 
-    def _compute_cost(self, params, N, num_samples_per_segment, accuracy_weight, waypoints):
+    def _compute_cost(self, params: np.ndarray, N: int, num_samples_per_segment: int, accuracy_weight: float, waypoints: List[Tuple[float, float, Optional[float]]]) -> float:
         """Compute cost function value for a given trajectory."""
         dt = params[0]
         states = params[1:].reshape((N, 5))
@@ -235,7 +236,7 @@ class TrajectoryOptimizer:
         
         return time_cost + accuracy_weight * smoothness_cost
 
-    def _dynamics_symbolic(self, vl, vr, al, ar):
+    def _dynamics_symbolic(self, vl: ca.DM, vr: ca.DM, al: ca.DM, ar: ca.DM) -> Tuple[ca.DM, ca.DM]:
         """CasADi version of DifferentialDriveModel.get_dynamics."""
         a = (al + ar) / 2.0
         alpha = (ar - al) / self.config.track_width
@@ -245,7 +246,7 @@ class TrajectoryOptimizer:
         fl = f_total - fr
         return fl, fr
 
-    def _max_force_symbolic(self, v_wheel, apply_headroom=True):
+    def _max_force_symbolic(self, v_wheel: ca.DM, apply_headroom: bool = True) -> ca.DM:
         """CasADi version of RobotConfig.get_max_force_at_velocity."""
         omega = (v_wheel / self.config.wheel_radius) * self.config.gearing
         torque = self.config.t_max_nm * (1.0 - ca.fabs(omega) / self.config.v_max_rad_s)
@@ -257,7 +258,7 @@ class TrajectoryOptimizer:
             force *= self.config.torque_headroom
         return force
 
-    def _build_initial_guess(self, waypoints, num_samples_per_segment, N):
+    def _build_initial_guess(self, waypoints: List[Tuple[float, float, Optional[float]]], num_samples_per_segment: int, N: int) -> np.ndarray:
         num_segments = len(waypoints) - 1
         initial_dt = 0.1
         guess = [initial_dt]
@@ -306,7 +307,7 @@ class TrajectoryOptimizer:
                 guess.extend([x, y, theta, 0.0, 0.0])
         return np.array(guess)
 
-    def format_output(self, params, N, num_samples_per_segment=10, waypoint_events=None):
+    def format_output(self, params: np.ndarray, N: int, num_samples_per_segment: int = 10, waypoint_events: Optional[Dict[int, str]] = None) -> List[Dict[str, Any]]:
         dt = params[0]
         states = params[1:].reshape((N, 5))
         samples = []

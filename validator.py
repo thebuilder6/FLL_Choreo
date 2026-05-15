@@ -1,9 +1,10 @@
+from typing import List, Dict, Tuple, Any
 import json
 import numpy as np
 from robot_model import RobotConfig, DifferentialDriveModel
 
 
-def forward_integrate(samples, robot_cfg: RobotConfig, fine_dt: float = 0.001):
+def forward_integrate(samples: List[Dict[str, Any]], robot_cfg: RobotConfig, fine_dt: float = 0.001) -> Tuple[List[Dict[str, Any]], Dict[str, float]]:
     """
     Forward-integrate differential-drive kinematics from the optimized
     wheel-velocity profile using a fine timestep.
@@ -107,11 +108,11 @@ def forward_integrate(samples, robot_cfg: RobotConfig, fine_dt: float = 0.001):
     return integrated, errors
 
 
-def audit_constraints(samples, robot_cfg: RobotConfig, apply_headroom=True):
+def audit_constraints(samples: List[Dict[str, Any]], robot_cfg: RobotConfig, apply_headroom: bool = True) -> Dict[str, Any]:
     """
     Re-evaluate motor and traction limits for each sample.
     Returns max violations and a list of violating sample indices with slip details.
-    
+
     Args:
         samples: Trajectory samples
         robot_cfg: Robot configuration
@@ -176,7 +177,7 @@ def audit_constraints(samples, robot_cfg: RobotConfig, apply_headroom=True):
     return audit
 
 
-def compute_metrics(samples):
+def compute_metrics(samples: List[Dict[str, Any]]) -> Dict[str, float]:
     """Basic trajectory metrics."""
     if not samples:
         return {}
@@ -221,11 +222,11 @@ def compute_metrics(samples):
     }
 
 
-def validate_trajectory(traj_file: str, config_file: str, apply_headroom=True):
+def validate_trajectory(traj_file: str, config_file: str, apply_headroom: bool = True) -> Tuple[Dict[str, float], Dict[str, Any], Dict[str, float]]:
     """
     CLI entry point: load a .traj file and a .chor config, run validation,
     and print a human-readable report.
-    
+
     Args:
         traj_file: Path to trajectory file
         config_file: Path to config file

@@ -1,8 +1,9 @@
+from typing import List, Dict, Any
 import json
 import numpy as np
 
 
-def resample_to_fixed_dt(samples, target_dt: float = 0.02, track_width: float = 0.0965):
+def resample_to_fixed_dt(samples: List[Dict[str, Any]], target_dt: float = 0.02, track_width: float = 0.0965) -> List[Dict[str, Any]]:
     """
     Linearly resample a variable-timestep trajectory to a fixed controller dt.
 
@@ -84,7 +85,7 @@ def resample_to_fixed_dt(samples, target_dt: float = 0.02, track_width: float = 
     return out
 
 
-def export_controller_json(samples, target_dt: float = 0.02, track_width: float = 0.0965):
+def export_controller_json(samples: List[Dict[str, Any]], target_dt: float = 0.02, track_width: float = 0.0965) -> Dict[str, Any]:
     """Return a JSON-serializable dict with controller-ready samples."""
     resampled = resample_to_fixed_dt(samples, target_dt, track_width)
     return {
@@ -98,7 +99,7 @@ def export_controller_json(samples, target_dt: float = 0.02, track_width: float 
 
 def write_controller_file(
     input_traj_file: str, output_file: str, target_dt: float = 0.02, track_width: float = 0.0965
-):
+) -> None:
     with open(input_traj_file, "r") as f:
         traj_data = json.load(f)
 
@@ -111,7 +112,7 @@ def write_controller_file(
     print(f"Exported {ctrl['num_samples']} controller samples at dt={target_dt}s to {output_file}")
 
 
-def write_python_file(input_traj_file: str, output_file: str):
+def write_python_file(input_traj_file: str, output_file: str) -> None:
     """
     Export trajectory samples and robot config as a Python file.
 

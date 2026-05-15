@@ -1,3 +1,4 @@
+from typing import Dict, Tuple, Any
 import numpy as np
 
 
@@ -21,7 +22,7 @@ class RobotConfig:
     DEFAULT_TORQUE_HEADROOM = 0.85  # 15% headroom for torque corrections
     DEFAULT_SPEED_HEADROOM = 0.90  # 10% headroom for speed corrections
 
-    def __init__(self, config_dict):
+    def __init__(self, config_dict: Dict[str, Any]) -> None:
         """
         Initialize robot configuration from config dictionary.
 
@@ -64,7 +65,7 @@ class RobotConfig:
             # No multiverse config in old format
             self.multiverse_config = {}
 
-    def get_max_force_at_velocity(self, v_wheel, apply_headroom=True):
+    def get_max_force_at_velocity(self, v_wheel: float, apply_headroom: bool = True) -> float:
         """
         Calculates max force magnitude a motor can apply at a given wheel velocity.
 
@@ -87,7 +88,7 @@ class RobotConfig:
             force *= self.torque_headroom
         return force
 
-    def max_linear_speed(self, apply_headroom=True):
+    def max_linear_speed(self, apply_headroom: bool = True) -> float:
         """No-load linear speed of the wheel (m/s)."""
         speed = self.v_max_rad_s * self.wheel_radius
         if apply_headroom:
@@ -103,7 +104,7 @@ class DifferentialDriveModel:
     physical constraints (motor limits, traction limits).
     """
 
-    def __init__(self, config: RobotConfig):
+    def __init__(self, config: RobotConfig) -> None:
         """
         Initialize dynamics model with robot configuration.
 
@@ -112,7 +113,7 @@ class DifferentialDriveModel:
         """
         self.cfg = config
 
-    def get_dynamics(self, vl, vr, al, ar):
+    def get_dynamics(self, vl: float, vr: float, al: float, ar: float) -> Tuple[float, float]:
         """
         Calculate required wheel forces for given velocities and accelerations.
 
@@ -145,7 +146,7 @@ class DifferentialDriveModel:
 
         return fl, fr
 
-    def get_wheel_normal_forces(self, vl, vr, al, ar):
+    def get_wheel_normal_forces(self, vl: float, vr: float, al: float, ar: float) -> Tuple[float, float]:
         """
         Calculate normal force on each wheel considering weight transfer.
 
@@ -193,7 +194,7 @@ class DifferentialDriveModel:
 
         return nl, nr
 
-    def check_constraints(self, vl, vr, al, ar, apply_headroom=True):
+    def check_constraints(self, vl: float, vr: float, al: float, ar: float, apply_headroom: bool = True) -> Dict[str, float]:
         """
         Check if given state violates motor or traction limits.
 

@@ -7,6 +7,7 @@ A hybrid trajectory generation architecture combining:
 - Stochastic perturbation (STOMP)
 """
 
+from typing import List, Dict, Tuple, Any, Optional
 import numpy as np
 import casadi as ca
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -35,8 +36,8 @@ TEB_WIDE_SWEEP_BIAS = 2.0
 
 class PathBootstrapper:
     """Generates kinematically valid initial guesses using Reeds-Shepp paths."""
-    
-    def __init__(self, config: RobotConfig):
+
+    def __init__(self, config: RobotConfig) -> None:
         self.config = config
         # Get multiverse config or use defaults
         mv_cfg = config.multiverse_config
@@ -44,15 +45,15 @@ class PathBootstrapper:
         self.turning_radius = bootstrap_cfg.get("turning_radius", 0.0)
         self.resolution = bootstrap_cfg.get("resolution", 0.05)
         self.rs_path = ReedsSheppPath(self.turning_radius)
-    
-    def generate_baseline(self, waypoints, num_samples_per_segment=10):
+
+    def generate_baseline(self, waypoints: List[Tuple[float, float, Optional[float]]], num_samples_per_segment: int = 10) -> np.ndarray:
         """
         Generate kinematically valid baseline trajectory.
-        
+
         Args:
             waypoints: List of (x, y, heading) tuples
             num_samples_per_segment: Number of samples per segment
-            
+
         Returns:
             Initial guess array [dt, x, y, theta, vl, vr, ...]
         """
@@ -83,7 +84,7 @@ class PathBootstrapper:
         
         return np.array(guess)
     
-    def _generate_segment_waypoints(self, start, goal, num_points):
+    def _generate_segment_waypoints(self, start: Tuple[float, float, Optional[float]], goal: Tuple[float, float, Optional[float]], num_points: int) -> List[Tuple[float, float, Optional[float]]]:
         """Generate waypoints for a segment using Reeds-Shepp or fallback."""
         # Try Reeds-Shepp if both headings are known
         if start[2] is not None and goal[2] is not None:
@@ -95,7 +96,7 @@ class PathBootstrapper:
         # Fallback to linear interpolation
         return linear_interpolation_waypoints(start, goal, num_points)
     
-    def _interpolate_heading(self, p1, p2, frac):
+    def _interpolate_heading(self, p1: Tuple[float, float, Optional[float]], p2: Tuple[float, float, Optional[float]], frac: float) -> Optional[float]:
         """Interpolate heading between two poses."""
         if p1[2] is not None and p2[2] is not None:
             diff = (p2[2] - p1[2] + np.pi) % (2 * np.pi) - np.pi
@@ -110,8 +111,8 @@ class PathBootstrapper:
 
 class TrajectoryCritic:
     """Evaluates trajectory quality and identifies problematic segments."""
-    
-    def __init__(self, config: RobotConfig):
+
+    def __init__(self, config: RobotConfig) -> None:
         self.config = config
         self.tortuosity_threshold = TORTUOSITY_THRESHOLD
         self.yaw_buffer_rad = YAW_BUFFER_RAD
@@ -120,65 +121,14 @@ class TrajectoryCritic:
         self.curvature_cost_threshold = CURVATURE_COST_THRESHOLD
         self.centripetal_cost_threshold = CENTRIPETAL_COST_THRESHOLD
     
-    def _calculate_tortuosity(self, trajectory):
-        """Calculate tortuosity (path length / straight-line distance)."""
-        if len(trajectory) < 2:
-            return 0.0
-        
-        total_path_length = 0.0
-        for i in range(len(trajectory) - 1):
-            dx = trajectory[i+1]['x'] - trajectory[i]['x']
-            dy = trajectory[i+1]['y'] - trajectory[i]['y']
-            total_path_length += np.sqrt(dx**2 + dy**2)
-        
-        straight_line_distance = np.sqrt(
-            (trajectory[-1]['x'] - trajectory[0]['x'])**2 +
-            (trajectory[-1]['y'] - trajectory[0]['y'])**2
-        )
-        
-        if straight_line_distance == 0:
-            return float('inf')
-        
-        return total_path_length / straight_line_distance
-    
-    def _calculate_yaw_excess(self, trajectory):
-        """Calculate excess yaw changes (sum of absolute heading changes)."""
-        if len(trajectory) < 2:
-            return 0.0
-        
-        total_yaw_change = 0.0
-        for i in range(len(trajectory) - 1):
-            yaw_diff = abs(trajectory[i+1]['heading'] - trajectory[i]['heading'])
-            # Normalize to [-pi, pi]
-            yaw_diff = (yaw_diff + np.pi) % (2 * np.pi) - np.pi
-            total_yaw_change += abs(yaw_diff)
-        
-        return total_yaw_change
-    
-    def _calculate_velocity_chattering(self, trajectory):
-        """Calculate velocity chattering (number of sign changes)."""
-        if len(trajectory) < 2:
-            return 0
-        
-        vl_crossings = 0
-        vr_crossings = 0
-        
-        for i in range(1, len(trajectory)):
-            if trajectory[i]['vl'] * trajectory[i-1]['vl'] < 0:
-                vl_crossings += 1
-            if trajectory[i]['vr'] * trajectory[i-1]['vr'] < 0:
-                vr_crossings += 1
-        
-        return vl_crossings + vr_crossings
-    
-    def evaluate(self, trajectory, num_samples_per_segment):
+    def evaluate(self, trajectory: List[Dict[str, Any]], num_samples_per_segment: int) -> List[Tuple[int, int]]:
         """
         Evaluate trajectory and identify problematic segments.
-        
+
         Args:
             trajectory: List of trajectory sample dictionaries
             num_samples_per_segment: Number of samples per segment
-            
+
         Returns:
             List of (start_idx, end_idx) tuples for problematic windows
         """
@@ -192,9 +142,9 @@ class TrajectoryCritic:
             segment = trajectory[start_idx:end_idx]
             
             # Calculate metrics
-            tortuosity = self._calculate_tortuosity(segment)
-            yaw_excess = self._calculate_yaw_excess(segment)
-            chattering = self._calculate_velocity_chattering(segment)
+            tortuosity = self._compute_tortuosity(segment)
+            yaw_excess = self._compute_yaw_excess(segment)
+            chattering = self._compute_velocity_chattering(segment)
             
             # Calculate research-grounded metrics
             jerk_cost = self._calculate_jerk_cost(segment)
@@ -212,7 +162,7 @@ class TrajectoryCritic:
         
         return bad_windows
     
-    def _compute_tortuosity(self, samples):
+    def _compute_tortuosity(self, samples: List[Dict[str, Any]]) -> float:
         """Compute path length / straight line distance ratio."""
         path_length = 0.0
         for i in range(len(samples) - 1):
@@ -229,7 +179,7 @@ class TrajectoryCritic:
             return 0.0
         return path_length / straight_distance
     
-    def _compute_yaw_excess(self, samples):
+    def _compute_yaw_excess(self, samples: List[Dict[str, Any]]) -> float:
         """Compute excess yaw rate beyond expected turn."""
         total_yaw_change = 0.0
         for i in range(len(samples) - 1):
@@ -241,7 +191,7 @@ class TrajectoryCritic:
         
         return max(0, total_yaw_change - expected_yaw)
     
-    def _compute_velocity_chattering(self, samples):
+    def _compute_velocity_chattering(self, samples: List[Dict[str, Any]]) -> int:
         """Count zero-crossings of wheel velocities."""
         vl_crossings = 0
         vr_crossings = 0
@@ -254,16 +204,16 @@ class TrajectoryCritic:
         
         return vl_crossings + vr_crossings
     
-    def _calculate_jerk_cost(self, trajectory):
+    def _calculate_jerk_cost(self, trajectory: List[Dict[str, Any]]) -> float:
         """
         Calculate jerk cost (rate of acceleration change).
-        
+
         Research-grounded metric from smoothness optimization literature.
         High jerk indicates rapid acceleration changes leading to tracking errors.
-        
+
         Args:
             trajectory: List of trajectory sample dictionaries
-            
+
         Returns:
             Total jerk cost (sum of squared jerk)
         """
@@ -284,16 +234,16 @@ class TrajectoryCritic:
         
         return jerk_cost
     
-    def _calculate_curvature_cost(self, trajectory):
+    def _calculate_curvature_cost(self, trajectory: List[Dict[str, Any]]) -> float:
         """
         Calculate curvature cost (sharpness of turns).
-        
+
         Research-grounded metric from vehicle trajectory planning.
         High curvature indicates sharp turns that may cause wheel slip.
-        
+
         Args:
             trajectory: List of trajectory sample dictionaries
-            
+
         Returns:
             Total curvature cost (sum of squared curvature)
         """
@@ -315,16 +265,16 @@ class TrajectoryCritic:
         
         return curvature_cost
     
-    def _calculate_centripetal_cost(self, trajectory):
+    def _calculate_centripetal_cost(self, trajectory: List[Dict[str, Any]]) -> float:
         """
         Calculate centripetal acceleration cost.
-        
+
         Research-grounded metric from vehicle dynamics.
         Penalizes trajectories approaching friction limits (wheel slip risk).
-        
+
         Args:
             trajectory: List of trajectory sample dictionaries
-            
+
         Returns:
             Total centripetal cost (penalty for approaching friction limit)
         """
@@ -345,22 +295,22 @@ class TrajectoryCritic:
 
 class LocalSegmentOptimizer:
     """Miniature optimizer for solving local trajectory segments."""
-    
-    def __init__(self, config: RobotConfig):
+
+    def __init__(self, config: RobotConfig) -> None:
         self.config = config
         self.model = DifferentialDriveModel(config)
-    
-    def solve_window(self, start_state, end_state, num_samples, initial_guess=None, apply_headroom=True):
+
+    def solve_window(self, start_state: Tuple[float, float, float, float, float], end_state: Tuple[float, float, float, float, float], num_samples: int, initial_guess: Optional[np.ndarray] = None, apply_headroom: bool = True) -> Tuple[bool, float, Optional[np.ndarray]]:
         """
         Solve trajectory for a local window with pinned boundary states.
-        
+
         Args:
             start_state: (x, y, theta, vl, vr) tuple
             end_state: (x, y, theta, vl, vr) tuple
             num_samples: Number of samples in the window
             initial_guess: Optional initial guess array
             apply_headroom: Whether to apply safety margins
-            
+
         Returns:
             Tuple of (success, cost, trajectory_array)
         """
@@ -471,7 +421,7 @@ class LocalSegmentOptimizer:
             # TODO: Log refinement failures for analysis
             return False, float('inf'), None
     
-    def _dynamics_symbolic(self, vl, vr, al, ar):
+    def _dynamics_symbolic(self, vl: ca.DM, vr: ca.DM, al: ca.DM, ar: ca.DM) -> Tuple[ca.DM, ca.DM]:
         a = (al + ar) / 2.0
         alpha = (ar - al) / self.config.track_width
         f_total = self.config.mass * a
@@ -480,7 +430,7 @@ class LocalSegmentOptimizer:
         fl = f_total - fr
         return fl, fr
     
-    def _max_force_symbolic(self, v_wheel, apply_headroom=True):
+    def _max_force_symbolic(self, v_wheel: ca.DM, apply_headroom: bool = True) -> ca.DM:
         omega = (v_wheel / self.config.wheel_radius) * self.config.gearing
         torque = self.config.t_max_nm * (1.0 - ca.fabs(omega) / self.config.v_max_rad_s)
         torque = ca.fmax(0, torque)
@@ -492,14 +442,14 @@ class LocalSegmentOptimizer:
 
 class MultiVerseRefiner:
     """Handles TEB/STOMP parallel refinement of problematic segments."""
-    
-    def __init__(self, config: RobotConfig, enable_parallel=True, num_workers=8, verbose=True):
+
+    def __init__(self, config: RobotConfig, enable_parallel: bool = True, num_workers: int = 8, verbose: bool = True) -> None:
         self.config = config
         self.enable_parallel = enable_parallel
         self.num_workers = num_workers
         self.verbose = verbose
         self.local_solver = LocalSegmentOptimizer(config)
-        self.refinement_history = []  # Store heuristic results for convergence visualization
+        self.refinement_history: List[Dict[str, Any]] = []  # Store heuristic results for convergence visualization
         
         # Get multiverse config
         mv_cfg = config.multiverse_config
@@ -514,17 +464,17 @@ class MultiVerseRefiner:
         self.point_turn_bias = teb_cfg.get("point_turn_bias", TEB_POINT_TURN_BIAS)
         self.wide_sweep_bias = teb_cfg.get("wide_sweep_bias", TEB_WIDE_SWEEP_BIAS)
     
-    def refine_segment(self, start_state, end_state, num_samples, base_guess, capture_iterations=False):
+    def refine_segment(self, start_state: Tuple[float, float, float, float, float], end_state: Tuple[float, float, float, float, float], num_samples: int, base_guess: np.ndarray, capture_iterations: bool = False) -> np.ndarray:
         """
         Refine a segment using parallel TEB/STOMP exploration.
-        
+
         Args:
             start_state: (x, y, theta, vl, vr) tuple
             end_state: (x, y, theta, vl, vr) tuple
             num_samples: Number of samples in the segment
             base_guess: Baseline initial guess array
             capture_iterations: If True, captures heuristic results for convergence visualization
-            
+
         Returns:
             Best trajectory array from all heuristics
         """
@@ -538,96 +488,50 @@ class MultiVerseRefiner:
         all_guesses = teb_guesses + stomp_guesses
         total_guesses = len(all_guesses)
         
-        if not self.enable_parallel:
-            # Sequential evaluation
-            best_cost = float('inf')
-            best_result = None
-            for i, guess in enumerate(all_guesses):
-                # Progress indicator
-                if self.verbose:
-                    progress = (i + 1) / total_guesses * 100
-                    sys.stdout.write(f"\r  Refining: {i+1}/{total_guesses} ({progress:.0f}%) - Best cost: {best_cost:.4f}s")
-                    sys.stdout.flush()
-                
-                success, cost, result = self.local_solver.solve_window(
-                    start_state, end_state, num_samples, guess
-                )
-                
-                # Capture heuristic result for convergence visualization
-                if capture_iterations and success:
-                    heuristic_type = 'TEB' if i < len(teb_guesses) else 'STOMP'
-                    heuristic_idx = i if i < len(teb_guesses) else i - len(teb_guesses)
-                    N = num_samples
-                    states = result[1:].reshape((N, 5))
-                    self.refinement_history.append({
-                        'iteration': i,
-                        'cost': cost,
-                        'trajectory': states.copy(),
-                        'dt': float(result[0]),
-                        'heuristic_type': heuristic_type,
-                        'heuristic_idx': heuristic_idx
-                    })
-                
-                if success and cost < best_cost:
-                    best_cost = cost
-                    best_result = result
-            
+        # TODO: Re-implement parallel execution using multiprocessing with proper CasADi serialization
+        # Previous parallel implementation was removed due to CasADi pickling issues.
+        # Future implementation should use shared memory or alternative parallelization strategy.
+        
+        # Sequential evaluation
+        best_cost = float('inf')
+        best_result = None
+        for i, guess in enumerate(all_guesses):
+            # Progress indicator
             if self.verbose:
-                sys.stdout.write(f"\r  Refining: {total_guesses}/{total_guesses} (100%) - Best cost: {best_cost:.4f}s\n")
+                progress = (i + 1) / total_guesses * 100
+                sys.stdout.write(f"\r  Refining: {i+1}/{total_guesses} ({progress:.0f}%) - Best cost: {best_cost:.4f}s")
                 sys.stdout.flush()
             
-            return best_result if best_result is not None else base_guess
-        else:
-            # Parallel evaluation
-            best_cost = float('inf')
-            best_result = None
-            completed = 0
+            success, cost, result = self.local_solver.solve_window(
+                start_state, end_state, num_samples, guess
+            )
             
-            with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
-                futures = {}
-                for i, guess in enumerate(all_guesses):
-                    future = executor.submit(
-                        self._solve_window_wrapper,
-                        start_state, end_state, num_samples, guess
-                    )
-                    futures[future] = i  # Store index with future
-                
-                for future in as_completed(futures):
-                    completed += 1
-                    i = futures[future]
-                    if self.verbose:
-                        progress = completed / total_guesses * 100
-                        sys.stdout.write(f"\r  Refining: {completed}/{total_guesses} ({progress:.0f}%) - Best cost: {best_cost:.4f}s")
-                        sys.stdout.flush()
-                    
-                    success, cost, result = future.result()
-                    
-                    # Capture heuristic result for convergence visualization
-                    if capture_iterations and success:
-                        heuristic_type = 'TEB' if i < len(teb_guesses) else 'STOMP'
-                        heuristic_idx = i if i < len(teb_guesses) else i - len(teb_guesses)
-                        N = num_samples
-                        states = result[1:].reshape((N, 5))
-                        self.refinement_history.append({
-                            'iteration': i,
-                            'cost': cost,
-                            'trajectory': states.copy(),
-                            'dt': float(result[0]),
-                            'heuristic_type': heuristic_type,
-                            'heuristic_idx': heuristic_idx
-                        })
-                    
-                    if success and cost < best_cost:
-                        best_cost = cost
-                        best_result = result
+            # Capture heuristic result for convergence visualization
+            if capture_iterations and success:
+                heuristic_type = 'TEB' if i < len(teb_guesses) else 'STOMP'
+                heuristic_idx = i if i < len(teb_guesses) else i - len(teb_guesses)
+                N = num_samples
+                states = result[1:].reshape((N, 5))
+                self.refinement_history.append({
+                    'iteration': i,
+                    'cost': cost,
+                    'trajectory': states.copy(),
+                    'dt': float(result[0]),
+                    'heuristic_type': heuristic_type,
+                    'heuristic_idx': heuristic_idx
+                })
             
-            if self.verbose:
-                sys.stdout.write(f"\r  Refining: {total_guesses}/{total_guesses} (100%) - Best cost: {best_cost:.4f}s\n")
-                sys.stdout.flush()
-            
-            return best_result if best_result is not None else base_guess
+            if success and cost < best_cost:
+                best_cost = cost
+                best_result = result
+        
+        if self.verbose:
+            sys.stdout.write(f"\r  Refining: {total_guesses}/{total_guesses} (100%) - Best cost: {best_cost:.4f}s\n")
+            sys.stdout.flush()
+        
+        return best_result if best_result is not None else base_guess
     
-    def _generate_teb_heuristics(self, start_state, end_state, num_samples, base_guess):
+    def _generate_teb_heuristics(self, start_state: Tuple[float, float, float, float, float], end_state: Tuple[float, float, float, float, float], num_samples: int, base_guess: np.ndarray) -> List[np.ndarray]:
         """Generate TEB topology-based initial guesses."""
         guesses = []
         N = num_samples
@@ -669,7 +573,7 @@ class MultiVerseRefiner:
         
         return guesses
     
-    def _generate_stomp_heuristics(self, base_guess, num_samples):
+    def _generate_stomp_heuristics(self, base_guess: np.ndarray, num_samples: int) -> List[np.ndarray]:
         """Generate STOMP stochastic perturbation guesses."""
         guesses = []
         N = num_samples
@@ -688,7 +592,7 @@ class MultiVerseRefiner:
         
         return guesses
     
-    def _solve_window_wrapper(self, start_state, end_state, num_samples, guess):
+    def _solve_window_wrapper(self, start_state: Tuple[float, float, float, float, float], end_state: Tuple[float, float, float, float, float], num_samples: int, guess: np.ndarray) -> Tuple[bool, float, Optional[np.ndarray]]:
         """Wrapper for parallel execution."""
         # For now, run sequentially to avoid pickling issues with CasADi
         # True parallel execution would require serializing the config
@@ -697,8 +601,8 @@ class MultiVerseRefiner:
 
 class MasterTrajectoryOptimizer:
     """Orchestrates the Multi-Verse refinement pipeline."""
-    
-    def __init__(self, config: RobotConfig, enable_parallel=True, num_workers=8, verbose=True):
+
+    def __init__(self, config: RobotConfig, enable_parallel: bool = True, num_workers: int = 8, verbose: bool = True) -> None:
         self.config = config
         self.enable_parallel = enable_parallel
         self.num_workers = num_workers
@@ -706,13 +610,13 @@ class MasterTrajectoryOptimizer:
         self.bootstrapper = PathBootstrapper(config)
         self.critic = TrajectoryCritic(config)
         self.refiner = MultiVerseRefiner(config, enable_parallel, num_workers, verbose)
-        self.iteration_history = []  # Store convergence data across phases
+        self.iteration_history: List[Dict[str, Any]] = []  # Store convergence data across phases
     
-    def solve(self, waypoints, num_samples_per_segment=10, accuracy_weight=0.0, 
-              stop_waypoint_indices=None, waypoint_events=None, apply_headroom=True, verbose=True, capture_iterations=False):
+    def solve(self, waypoints: List[Tuple[float, float, Optional[float]]], num_samples_per_segment: int = 10, accuracy_weight: float = 0.0,
+              stop_waypoint_indices: Optional[List[int]] = None, waypoint_events: Optional[Dict[int, str]] = None, apply_headroom: bool = True, verbose: bool = True, capture_iterations: bool = False) -> List[Dict[str, Any]]:
         """
         Solve trajectory using Multi-Verse refinement pipeline.
-        
+
         Args:
             waypoints: List of (x, y, heading) tuples
             num_samples_per_segment: Number of samples per segment
@@ -722,7 +626,7 @@ class MasterTrajectoryOptimizer:
             apply_headroom: Apply safety margins
             verbose: If True, prints progress messages
             capture_iterations: If True, captures intermediate states for convergence visualization
-            
+
         Returns:
             List of trajectory sample dictionaries
         """
