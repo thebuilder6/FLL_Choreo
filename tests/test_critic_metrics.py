@@ -39,7 +39,6 @@ class TestCriticMetrics(unittest.TestCase):
         trajectory = []
         for i in range(10):
             trajectory.append({
-                't': i * 0.1,
                 'x': i * 0.1,
                 'y': 0.0,
                 'heading': 0.0,
@@ -48,7 +47,7 @@ class TestCriticMetrics(unittest.TestCase):
                 'omega': 0.0
             })
         
-        tortuosity = self.critic._compute_tortuosity(trajectory)
+        tortuosity = self.critic._calculate_tortuosity(trajectory)
         
         # Straight line should have tortuosity close to 1.0
         self.assertAlmostEqual(tortuosity, 1.0, places=2,
@@ -60,7 +59,6 @@ class TestCriticMetrics(unittest.TestCase):
         for i in range(10):
             y = 0.1 if i % 2 == 0 else -0.1
             trajectory.append({
-                't': i * 0.1,
                 'x': i * 0.1,
                 'y': y,
                 'heading': 0.0,
@@ -69,7 +67,7 @@ class TestCriticMetrics(unittest.TestCase):
                 'omega': 0.0
             })
         
-        tortuosity = self.critic._compute_tortuosity(trajectory)
+        tortuosity = self.critic._calculate_tortuosity(trajectory)
         
         # Zigzag should have tortuosity > 1.0
         self.assertGreater(tortuosity, 1.0,
@@ -80,7 +78,6 @@ class TestCriticMetrics(unittest.TestCase):
         trajectory = []
         for i in range(10):
             trajectory.append({
-                't': i * 0.1,
                 'x': i * 0.1,
                 'y': 0.0,
                 'heading': 0.0,
@@ -89,7 +86,7 @@ class TestCriticMetrics(unittest.TestCase):
                 'omega': 0.0
             })
         
-        yaw_excess = self.critic._compute_yaw_excess(trajectory)
+        yaw_excess = self.critic._calculate_yaw_excess(trajectory)
         
         # Constant heading should have zero yaw excess
         self.assertEqual(yaw_excess, 0.0,
@@ -101,7 +98,6 @@ class TestCriticMetrics(unittest.TestCase):
         for i in range(10):
             heading = i * 0.1  # Gradual turn
             trajectory.append({
-                't': i * 0.1,
                 'x': i * 0.1,
                 'y': 0.0,
                 'heading': heading,
@@ -110,7 +106,7 @@ class TestCriticMetrics(unittest.TestCase):
                 'omega': 0.0
             })
         
-        yaw_excess = self.critic._compute_yaw_excess(trajectory)
+        yaw_excess = self.critic._calculate_yaw_excess(trajectory)
         
         # Turning should have positive yaw excess
         self.assertGreater(yaw_excess, 0.0,
@@ -121,7 +117,6 @@ class TestCriticMetrics(unittest.TestCase):
         trajectory = []
         for i in range(10):
             trajectory.append({
-                't': i * 0.1,
                 'x': i * 0.1,
                 'y': 0.0,
                 'heading': 0.0,
@@ -130,7 +125,7 @@ class TestCriticMetrics(unittest.TestCase):
                 'omega': 0.0
             })
         
-        chattering = self.critic._compute_velocity_chattering(trajectory)
+        chattering = self.critic._calculate_velocity_chattering(trajectory)
         
         # Constant velocity should have zero chattering
         self.assertEqual(chattering, 0,
@@ -143,7 +138,6 @@ class TestCriticMetrics(unittest.TestCase):
             vl = 0.1 if i % 2 == 0 else -0.1
             vr = 0.1 if i % 2 == 0 else -0.1
             trajectory.append({
-                't': i * 0.1,
                 'x': i * 0.1,
                 'y': 0.0,
                 'heading': 0.0,
@@ -152,7 +146,7 @@ class TestCriticMetrics(unittest.TestCase):
                 'omega': 0.0
             })
         
-        chattering = self.critic._compute_velocity_chattering(trajectory)
+        chattering = self.critic._calculate_velocity_chattering(trajectory)
         
         # Oscillating velocity should have positive chattering
         self.assertGreater(chattering, 0,
@@ -163,7 +157,6 @@ class TestCriticMetrics(unittest.TestCase):
         trajectory = []
         for i in range(10):
             trajectory.append({
-                't': i * 0.1,
                 'x': i * 0.1,
                 'y': 0.0,
                 'heading': 0.0,
@@ -186,7 +179,6 @@ class TestCriticMetrics(unittest.TestCase):
             y = 0.0 if i < 5 else 0.5
             heading = 0.0 if i < 5 else np.pi/2
             trajectory.append({
-                't': i * 0.1,
                 'x': i * 0.1,
                 'y': y,
                 'heading': heading,
@@ -209,7 +201,6 @@ class TestCriticMetrics(unittest.TestCase):
             # Small tortuosity (close to straight line)
             y = 0.01 * np.sin(i * 0.1)  # Very small oscillation
             trajectory.append({
-                't': i * 0.1,
                 'x': i * 0.1,
                 'y': y,
                 'heading': 0.0,
